@@ -96,9 +96,6 @@ interface IStarkLicense {
     //  Views
     // ──────────────────────────────────────────────
 
-    /// @notice Get all agent IDs owned by an address.
-    function agentsOf(address owner) external view returns (uint256[] memory);
-
     /// @notice Get the agent URI for a given agent ID.
     function agentURI(uint256 agentId) external view returns (string memory);
 

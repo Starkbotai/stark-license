@@ -13,6 +13,11 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import "./interfaces/IStarkLicense.sol";
 
+/// @dev Minimal interface for ERC-20 tokens that expose a public burn(uint256) function.
+interface IERC20Burnable {
+    function burn(uint256 amount) external;
+}
+
 /// @title StarkLicense — EIP-8004 Identity Registry powered by STARKBOT token burns
 /// @notice Each register() call burns STARKBOT tokens and mints a new ERC-721 agent identity.
 ///         A single address can register multiple agents (per EIP-8004).
@@ -127,8 +132,9 @@ contract StarkLicense is
     }
 
     function _register(address caller, string memory uri) internal returns (uint256 agentId) {
-        // Pull tokens from caller → this contract (effectively burned)
+        // Pull tokens from caller → this contract, then burn them
         PAYMENT_TOKEN.safeTransferFrom(caller, address(this), REGISTRATION_FEE);
+        IERC20Burnable(address(PAYMENT_TOKEN)).burn(REGISTRATION_FEE);
         totalBurned += REGISTRATION_FEE;
 
         // Always mint a new agent identity
@@ -227,12 +233,19 @@ contract StarkLicense is
     }
 
     /// @dev Required override for ERC721 + ERC721Enumerable.
+    ///      Clears wallet delegation on transfer/burn so stale delegations don't persist.
     function _update(address to, uint256 tokenId, address auth)
         internal
         override(ERC721Upgradeable, ERC721EnumerableUpgradeable)
         returns (address)
     {
-        return super._update(to, tokenId, auth);
+        address from = super._update(to, tokenId, auth);
+        // Clear wallet delegation on transfer or burn (not on mint)
+        if (from != address(0) && _agentWallets[tokenId] != address(0)) {
+            delete _agentWallets[tokenId];
+            emit AgentWalletUnset(tokenId);
+        }
+        return from;
     }
 
     /// @dev Required override for ERC721 + ERC721Enumerable.
@@ -246,16 +259,6 @@ contract StarkLicense is
     // ──────────────────────────────────────────────
     //  Views
     // ──────────────────────────────────────────────
-
-    /// @inheritdoc IStarkLicense
-    function agentsOf(address owner_) external view returns (uint256[] memory) {
-        uint256 count = balanceOf(owner_);
-        uint256[] memory ids = new uint256[](count);
-        for (uint256 i; i < count; ++i) {
-            ids[i] = tokenOfOwnerByIndex(owner_, i);
-        }
-        return ids;
-    }
 
     /// @inheritdoc IStarkLicense
     function agentURI(uint256 agentId) external view returns (string memory) {
@@ -279,7 +282,7 @@ contract StarkLicense is
 
     /// @notice Returns the implementation version. Bump on each upgrade.
     function version() external pure virtual returns (uint256) {
-        return 2;
+        return 3;
     }
 
     // ──────────────────────────────────────────────
