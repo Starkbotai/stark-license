@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts-upgradeable/token/ERC721/ERC721Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/cryptography/EIP712Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
@@ -13,15 +14,16 @@ import "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
 import "./interfaces/IStarkLicense.sol";
 
 /// @title StarkLicense — EIP-8004 Identity Registry powered by STARKBOT token burns
-/// @notice Agents register by transferring 1000 STARKBOT tokens into this contract
-///         (effectively burned). Each registration mints an ERC-721 identity NFT.
-///         Re-registering with another 1000 tokens lets agents update their info.
+/// @notice Each register() call burns STARKBOT tokens and mints a new ERC-721 agent identity.
+///         A single address can register multiple agents (per EIP-8004).
+///         ERC721Enumerable provides on-chain lookup of all agents owned by an address.
 /// @dev Deployed behind an ERC-1967 UUPS proxy. Owner can upgrade via `upgradeToAndCall`.
 /// @custom:oz-upgrades
 contract StarkLicense is
     IStarkLicense,
     Initializable,
     ERC721Upgradeable,
+    ERC721EnumerableUpgradeable,
     EIP712Upgradeable,
     OwnableUpgradeable,
     PausableUpgradeable,
@@ -41,8 +43,8 @@ contract StarkLicense is
 
     uint256 private _nextAgentId;
 
-    /// @dev owner address → agentId (0 means not registered)
-    mapping(address => uint256) private _ownerToAgent;
+    /// @dev Deprecated in V2 (was single agent-per-address). Kept for storage layout compatibility.
+    mapping(address => uint256) private __deprecated_ownerToAgent;
 
     /// @dev agentId → agent URI string
     mapping(uint256 => string) private _agentURIs;
@@ -81,6 +83,7 @@ contract StarkLicense is
         if (owner_ == address(0)) revert ZeroAddress();
 
         __ERC721_init("STARKBOT Agent License", "STARK-LICENSE");
+        __ERC721Enumerable_init();
         __EIP712_init("StarkLicense", "1");
         __Ownable_init(owner_);
         __Pausable_init();
@@ -128,20 +131,9 @@ contract StarkLicense is
         PAYMENT_TOKEN.safeTransferFrom(caller, address(this), REGISTRATION_FEE);
         totalBurned += REGISTRATION_FEE;
 
-        uint256 existing = _ownerToAgent[caller];
-        if (existing != 0) {
-            // Re-registration: update URI if provided, keep same NFT
-            if (bytes(uri).length > 0) {
-                _agentURIs[existing] = uri;
-            }
-            emit ReRegistered(existing, uri, caller);
-            return existing;
-        }
-
-        // First-time registration: mint new identity NFT
+        // Always mint a new agent identity
         agentId = _nextAgentId++;
         _mint(caller, agentId);
-        _ownerToAgent[caller] = agentId;
         _agentURIs[agentId] = uri;
 
         emit Registered(agentId, uri, caller);
@@ -218,8 +210,13 @@ contract StarkLicense is
     //  ERC-165 / ERC-721 Overrides
     // ──────────────────────────────────────────────
 
-    /// @notice EIP-165: advertise ERC-721 + IStarkLicense support.
-    function supportsInterface(bytes4 interfaceId) public view override returns (bool) {
+    /// @notice EIP-165: advertise ERC-721 + ERC-721Enumerable + IStarkLicense.
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(ERC721Upgradeable, ERC721EnumerableUpgradeable)
+        returns (bool)
+    {
         return interfaceId == type(IStarkLicense).interfaceId || super.supportsInterface(interfaceId);
     }
 
@@ -229,15 +226,21 @@ contract StarkLicense is
         return _agentURIs[agentId];
     }
 
-    /// @dev Update the owner→agent mapping on transfers.
-    function _update(address to, uint256 tokenId, address auth) internal override returns (address from) {
-        from = super._update(to, tokenId, auth);
-        if (from != address(0)) {
-            delete _ownerToAgent[from];
-        }
-        if (to != address(0)) {
-            _ownerToAgent[to] = tokenId;
-        }
+    /// @dev Required override for ERC721 + ERC721Enumerable.
+    function _update(address to, uint256 tokenId, address auth)
+        internal
+        override(ERC721Upgradeable, ERC721EnumerableUpgradeable)
+        returns (address)
+    {
+        return super._update(to, tokenId, auth);
+    }
+
+    /// @dev Required override for ERC721 + ERC721Enumerable.
+    function _increaseBalance(address account, uint128 value)
+        internal
+        override(ERC721Upgradeable, ERC721EnumerableUpgradeable)
+    {
+        super._increaseBalance(account, value);
     }
 
     // ──────────────────────────────────────────────
@@ -245,8 +248,13 @@ contract StarkLicense is
     // ──────────────────────────────────────────────
 
     /// @inheritdoc IStarkLicense
-    function agentOf(address owner_) external view returns (uint256) {
-        return _ownerToAgent[owner_];
+    function agentsOf(address owner_) external view returns (uint256[] memory) {
+        uint256 count = balanceOf(owner_);
+        uint256[] memory ids = new uint256[](count);
+        for (uint256 i; i < count; ++i) {
+            ids[i] = tokenOfOwnerByIndex(owner_, i);
+        }
+        return ids;
     }
 
     /// @inheritdoc IStarkLicense
@@ -256,7 +264,7 @@ contract StarkLicense is
 
     /// @inheritdoc IStarkLicense
     function totalAgents() external view returns (uint256) {
-        return _nextAgentId - 1;
+        return totalSupply();
     }
 
     /// @inheritdoc IStarkLicense
@@ -271,7 +279,7 @@ contract StarkLicense is
 
     /// @notice Returns the implementation version. Bump on each upgrade.
     function version() external pure virtual returns (uint256) {
-        return 1;
+        return 2;
     }
 
     // ──────────────────────────────────────────────

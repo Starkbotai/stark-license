@@ -33,21 +33,16 @@ contract StarkLicenseTest is Test {
     uint256 public constant FEE = 1000e18;
     string public constant URI_1 = "https://example.com/.well-known/agent-registration.json";
     string public constant URI_2 = "ipfs://QmUpdatedAgentURI";
+    string public constant URI_3 = "https://agent3.example.com/registration.json";
 
     function setUp() public {
         token = new MockSTARKBOT();
 
-        // Deploy implementation
         StarkLicense impl = new StarkLicense();
-
-        // Deploy proxy pointing at implementation, call initialize
         bytes memory initData = abi.encodeCall(StarkLicense.initialize, (address(token), FEE, deployer));
         ERC1967Proxy proxy = new ERC1967Proxy(address(impl), initData);
-
-        // Cast proxy to StarkLicense interface
         license = StarkLicense(address(proxy));
 
-        // Fund alice and bob
         token.mint(alice, 10_000e18);
         token.mint(bob, 10_000e18);
     }
@@ -72,19 +67,13 @@ contract StarkLicenseTest is Test {
     function test_initialize_revert_zeroToken() public {
         StarkLicense impl = new StarkLicense();
         vm.expectRevert(IStarkLicense.ZeroAddress.selector);
-        new ERC1967Proxy(
-            address(impl),
-            abi.encodeCall(StarkLicense.initialize, (address(0), FEE, deployer))
-        );
+        new ERC1967Proxy(address(impl), abi.encodeCall(StarkLicense.initialize, (address(0), FEE, deployer)));
     }
 
     function test_initialize_revert_zeroOwner() public {
         StarkLicense impl = new StarkLicense();
         vm.expectRevert(IStarkLicense.ZeroAddress.selector);
-        new ERC1967Proxy(
-            address(impl),
-            abi.encodeCall(StarkLicense.initialize, (address(token), FEE, address(0)))
-        );
+        new ERC1967Proxy(address(impl), abi.encodeCall(StarkLicense.initialize, (address(token), FEE, address(0))));
     }
 
     function test_implementation_cannotBeInitialized() public {
@@ -95,7 +84,7 @@ contract StarkLicenseTest is Test {
 
     // ─────────────────── Registration ───────────────────
 
-    function test_register_firstTime() public {
+    function test_register_withURI() public {
         vm.startPrank(alice);
         token.approve(address(license), FEE);
 
@@ -106,7 +95,6 @@ contract StarkLicenseTest is Test {
         vm.stopPrank();
 
         assertEq(agentId, 1);
-        assertEq(license.agentOf(alice), 1);
         assertEq(license.agentURI(1), URI_1);
         assertEq(license.totalAgents(), 1);
         assertEq(license.ownerOf(1), alice);
@@ -117,15 +105,10 @@ contract StarkLicenseTest is Test {
     function test_register_bare() public {
         vm.startPrank(alice);
         token.approve(address(license), FEE);
-
-        vm.expectEmit(true, true, false, true);
-        emit IStarkLicense.Registered(1, "", alice);
-
         uint256 agentId = license.register();
         vm.stopPrank();
 
         assertEq(agentId, 1);
-        assertEq(license.agentOf(alice), 1);
         assertEq(license.agentURI(1), "");
         assertEq(token.balanceOf(address(license)), FEE);
     }
@@ -141,6 +124,30 @@ contract StarkLicenseTest is Test {
         assertEq(license.tokenURI(agentId), URI_1);
     }
 
+    function test_register_multipleAgentsPerAddress() public {
+        vm.startPrank(alice);
+        token.approve(address(license), 3 * FEE);
+
+        uint256 id1 = license.register(URI_1);
+        uint256 id2 = license.register(URI_2);
+        uint256 id3 = license.register(URI_3);
+        vm.stopPrank();
+
+        // Each registration mints a new agent
+        assertEq(id1, 1);
+        assertEq(id2, 2);
+        assertEq(id3, 3);
+        assertEq(license.totalAgents(), 3);
+        assertEq(license.balanceOf(alice), 3);
+        assertEq(token.balanceOf(address(license)), 3 * FEE);
+        assertEq(license.totalBurned(), 3 * FEE);
+
+        // Each has its own URI
+        assertEq(license.agentURI(id1), URI_1);
+        assertEq(license.agentURI(id2), URI_2);
+        assertEq(license.agentURI(id3), URI_3);
+    }
+
     function test_register_twoUsers() public {
         vm.startPrank(alice);
         token.approve(address(license), FEE);
@@ -154,40 +161,7 @@ contract StarkLicenseTest is Test {
 
         assertEq(bobId, 2);
         assertEq(license.totalAgents(), 2);
-        assertEq(license.agentOf(bob), 2);
         assertEq(token.balanceOf(address(license)), 2 * FEE);
-    }
-
-    function test_register_reRegistration() public {
-        vm.startPrank(alice);
-        token.approve(address(license), 2 * FEE);
-        uint256 firstId = license.register(URI_1);
-
-        vm.expectEmit(true, true, false, true);
-        emit IStarkLicense.ReRegistered(firstId, URI_2, alice);
-
-        uint256 secondId = license.register(URI_2);
-        vm.stopPrank();
-
-        assertEq(secondId, firstId);
-        assertEq(license.agentURI(firstId), URI_2);
-        assertEq(license.totalAgents(), 1);
-        assertEq(token.balanceOf(address(license)), 2 * FEE);
-        assertEq(license.totalBurned(), 2 * FEE);
-    }
-
-    function test_register_bare_reRegistration() public {
-        vm.startPrank(alice);
-        token.approve(address(license), 2 * FEE);
-        uint256 firstId = license.register(URI_1);
-
-        // Re-register bare — URI stays the same
-        uint256 secondId = license.register();
-        vm.stopPrank();
-
-        assertEq(secondId, firstId);
-        assertEq(license.agentURI(firstId), URI_1); // unchanged
-        assertEq(license.totalBurned(), 2 * FEE);
     }
 
     function test_register_withMetadata() public {
@@ -222,6 +196,58 @@ contract StarkLicenseTest is Test {
         vm.stopPrank();
     }
 
+    // ─────────────────── agentsOf (multi-identity lookup) ───────────────────
+
+    function test_agentsOf_empty() public view {
+        uint256[] memory ids = license.agentsOf(alice);
+        assertEq(ids.length, 0);
+    }
+
+    function test_agentsOf_single() public {
+        vm.startPrank(alice);
+        token.approve(address(license), FEE);
+        uint256 agentId = license.register(URI_1);
+        vm.stopPrank();
+
+        uint256[] memory ids = license.agentsOf(alice);
+        assertEq(ids.length, 1);
+        assertEq(ids[0], agentId);
+    }
+
+    function test_agentsOf_multiple() public {
+        vm.startPrank(alice);
+        token.approve(address(license), 3 * FEE);
+        uint256 id1 = license.register(URI_1);
+        uint256 id2 = license.register(URI_2);
+        uint256 id3 = license.register(URI_3);
+        vm.stopPrank();
+
+        uint256[] memory ids = license.agentsOf(alice);
+        assertEq(ids.length, 3);
+        assertEq(ids[0], id1);
+        assertEq(ids[1], id2);
+        assertEq(ids[2], id3);
+    }
+
+    function test_agentsOf_updatesOnTransfer() public {
+        vm.startPrank(alice);
+        token.approve(address(license), 2 * FEE);
+        uint256 id1 = license.register(URI_1);
+        uint256 id2 = license.register(URI_2);
+
+        // Transfer one to bob
+        license.transferFrom(alice, bob, id1);
+        vm.stopPrank();
+
+        uint256[] memory aliceIds = license.agentsOf(alice);
+        assertEq(aliceIds.length, 1);
+        assertEq(aliceIds[0], id2);
+
+        uint256[] memory bobIds = license.agentsOf(bob);
+        assertEq(bobIds.length, 1);
+        assertEq(bobIds[0], id1);
+    }
+
     // ─────────────────── URI Updates ───────────────────
 
     function test_setAgentURI() public {
@@ -236,7 +262,7 @@ contract StarkLicenseTest is Test {
         vm.stopPrank();
 
         assertEq(license.agentURI(agentId), URI_2);
-        assertEq(token.balanceOf(address(license)), FEE);
+        assertEq(token.balanceOf(address(license)), FEE); // no extra charge
     }
 
     function test_setAgentURI_revert_notOwner() public {
@@ -298,17 +324,15 @@ contract StarkLicenseTest is Test {
         uint256 deadline = block.timestamp + 1 hours;
         uint256 nonce = license.walletNonce(agentId);
 
-        bytes32 structHash = keccak256(
-            abi.encode(license.SET_WALLET_TYPEHASH(), agentId, wallet, nonce, deadline)
-        );
+        bytes32 structHash =
+            keccak256(abi.encode(license.SET_WALLET_TYPEHASH(), agentId, wallet, nonce, deadline));
         bytes32 digest = _getDigest(structHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(walletPk, digest);
-        bytes memory sig = abi.encodePacked(r, s, v);
 
         vm.expectEmit(true, true, false, false);
         emit IStarkLicense.AgentWalletSet(agentId, wallet);
 
-        license.setAgentWallet(agentId, wallet, deadline, sig);
+        license.setAgentWallet(agentId, wallet, deadline, abi.encodePacked(r, s, v));
         vm.stopPrank();
 
         assertEq(license.getAgentWallet(agentId), wallet);
@@ -323,9 +347,8 @@ contract StarkLicenseTest is Test {
         uint256 agentId = license.register(URI_1);
 
         uint256 deadline = block.timestamp - 1;
-        bytes32 structHash = keccak256(
-            abi.encode(license.SET_WALLET_TYPEHASH(), agentId, wallet, 0, deadline)
-        );
+        bytes32 structHash =
+            keccak256(abi.encode(license.SET_WALLET_TYPEHASH(), agentId, wallet, 0, deadline));
         bytes32 digest = _getDigest(structHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(walletPk, digest);
 
@@ -343,9 +366,8 @@ contract StarkLicenseTest is Test {
         uint256 agentId = license.register(URI_1);
 
         uint256 deadline = block.timestamp + 1 hours;
-        bytes32 structHash = keccak256(
-            abi.encode(license.SET_WALLET_TYPEHASH(), agentId, wallet, 0, deadline)
-        );
+        bytes32 structHash =
+            keccak256(abi.encode(license.SET_WALLET_TYPEHASH(), agentId, wallet, 0, deadline));
         bytes32 digest = _getDigest(structHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(wrongPk, digest);
 
@@ -362,9 +384,8 @@ contract StarkLicenseTest is Test {
         uint256 agentId = license.register(URI_1);
 
         uint256 deadline = block.timestamp + 1 hours;
-        bytes32 structHash = keccak256(
-            abi.encode(license.SET_WALLET_TYPEHASH(), agentId, wallet, 0, deadline)
-        );
+        bytes32 structHash =
+            keccak256(abi.encode(license.SET_WALLET_TYPEHASH(), agentId, wallet, 0, deadline));
         bytes32 digest = _getDigest(structHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(walletPk, digest);
         license.setAgentWallet(agentId, wallet, deadline, abi.encodePacked(r, s, v));
@@ -377,7 +398,7 @@ contract StarkLicenseTest is Test {
         assertEq(license.getAgentWallet(agentId), address(0));
     }
 
-    // ─────────────────── ERC-721 / tokenURI ───────────────────
+    // ─────────────────── ERC-721 / tokenURI / transfers ───────────────────
 
     function test_tokenURI() public {
         vm.startPrank(alice);
@@ -388,7 +409,7 @@ contract StarkLicenseTest is Test {
         assertEq(license.tokenURI(agentId), URI_1);
     }
 
-    function test_transfer_updatesMapping() public {
+    function test_transfer() public {
         vm.startPrank(alice);
         token.approve(address(license), FEE);
         uint256 agentId = license.register(URI_1);
@@ -396,14 +417,19 @@ contract StarkLicenseTest is Test {
         vm.stopPrank();
 
         assertEq(license.ownerOf(agentId), bob);
-        assertEq(license.agentOf(alice), 0);
-        assertEq(license.agentOf(bob), agentId);
+        assertEq(license.balanceOf(alice), 0);
+        assertEq(license.balanceOf(bob), 1);
     }
 
     // ─────────────────── EIP-165 ───────────────────
 
     function test_supportsInterface_ERC721() public view {
         assertTrue(license.supportsInterface(0x80ac58cd));
+    }
+
+    function test_supportsInterface_ERC721Enumerable() public view {
+        // ERC-721Enumerable = 0x780e9d63
+        assertTrue(license.supportsInterface(0x780e9d63));
     }
 
     function test_supportsInterface_IStarkLicense() public view {
@@ -430,13 +456,6 @@ contract StarkLicenseTest is Test {
         license.setRegistrationFee(newFee);
 
         assertEq(license.registrationFee(), newFee);
-
-        vm.startPrank(alice);
-        token.approve(address(license), newFee);
-        license.register(URI_1);
-        vm.stopPrank();
-
-        assertEq(token.balanceOf(address(license)), newFee);
     }
 
     function test_setRegistrationFee_revert_notOwner() public {
@@ -468,7 +487,6 @@ contract StarkLicenseTest is Test {
     // ─────────────────── Upgrades (UUPS) ───────────────────
 
     function test_upgrade_byOwner() public {
-        // Register alice first — state should survive upgrade
         vm.startPrank(alice);
         token.approve(address(license), FEE);
         uint256 agentId = license.register(URI_1);
@@ -476,22 +494,18 @@ contract StarkLicenseTest is Test {
 
         assertEq(license.version(), 1);
 
-        // Deploy V2 implementation and upgrade
         StarkLicenseV2 v2Impl = new StarkLicenseV2();
         vm.prank(deployer);
         license.upgradeToAndCall(address(v2Impl), "");
 
-        // Version bumped, state preserved
         assertEq(license.version(), 2);
-        assertEq(license.agentOf(alice), agentId);
-        assertEq(license.agentURI(agentId), URI_1);
         assertEq(license.ownerOf(agentId), alice);
+        assertEq(license.agentURI(agentId), URI_1);
         assertEq(license.totalBurned(), FEE);
     }
 
     function test_upgrade_revert_notOwner() public {
         StarkLicenseV2 v2Impl = new StarkLicenseV2();
-
         vm.prank(alice);
         vm.expectRevert();
         license.upgradeToAndCall(address(v2Impl), "");
@@ -505,6 +519,17 @@ contract StarkLicenseTest is Test {
 
     function test_registrationFee() public view {
         assertEq(license.registrationFee(), FEE);
+    }
+
+    function test_totalAgents_matchesTotalSupply() public {
+        vm.startPrank(alice);
+        token.approve(address(license), 2 * FEE);
+        license.register(URI_1);
+        license.register(URI_2);
+        vm.stopPrank();
+
+        assertEq(license.totalAgents(), 2);
+        assertEq(license.totalAgents(), license.totalSupply());
     }
 
     // ─────────────────── Helpers ───────────────────

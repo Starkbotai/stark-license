@@ -2,8 +2,8 @@
 pragma solidity ^0.8.28;
 
 /// @title IStarkLicense - EIP-8004 Identity Registry for STARKBOT agents
-/// @notice Agents register by burning 1000 STARKBOT tokens, receive an NFT identity,
-///         and publish a discoverable agent URI per the EIP-8004 specification.
+/// @notice Each register() call burns STARKBOT tokens and mints a new agent NFT.
+///         A single address can own multiple agents (per EIP-8004).
 interface IStarkLicense {
     // ──────────────────────────────────────────────
     //  Structs
@@ -18,11 +18,8 @@ interface IStarkLicense {
     //  Events (EIP-8004)
     // ──────────────────────────────────────────────
 
-    /// @notice Emitted when an agent registers for the first time.
+    /// @notice Emitted when a new agent is registered.
     event Registered(uint256 indexed agentId, string agentURI, address indexed owner);
-
-    /// @notice Emitted when an agent re-registers (updates URI + pays again).
-    event ReRegistered(uint256 indexed agentId, string newURI, address indexed owner);
 
     /// @notice Emitted when an agent's URI is updated (owner only, no payment).
     event URIUpdated(uint256 indexed agentId, string newURI, address indexed updatedBy);
@@ -39,9 +36,6 @@ interface IStarkLicense {
     /// @notice Emitted when the registration fee is updated by the owner.
     event RegistrationFeeUpdated(uint256 oldFee, uint256 newFee);
 
-    /// @notice Emitted when the contract is paused/unpaused.
-    event Paused(bool isPaused);
-
     // ──────────────────────────────────────────────
     //  Errors
     // ──────────────────────────────────────────────
@@ -57,22 +51,19 @@ interface IStarkLicense {
     // ──────────────────────────────────────────────
 
     /// @notice Register a new agent (no URI). Burns REGISTRATION_FEE tokens.
-    ///         The agent can set their URI later via setAgentURI().
-    ///         If the caller already owns an agent, this is a no-op re-registration
-    ///         (tokens are still burned).
-    /// @return agentId The token ID of the registered agent.
+    ///         URI can be set later via setAgentURI().
+    /// @return agentId The token ID of the new agent.
     function register() external returns (uint256 agentId);
 
     /// @notice Register a new agent with a URI. Burns REGISTRATION_FEE tokens.
-    ///         If the caller already owns an agent, re-registers (updates URI).
     /// @param agentURI The EIP-8004 agent registration URI.
-    /// @return agentId The token ID of the registered agent.
+    /// @return agentId The token ID of the new agent.
     function register(string calldata agentURI) external returns (uint256 agentId);
 
-    /// @notice Register with URI and initial metadata entries.
+    /// @notice Register a new agent with URI and initial metadata.
     /// @param agentURI The EIP-8004 agent registration URI.
     /// @param metadata Array of key-value metadata entries.
-    /// @return agentId The token ID of the registered agent.
+    /// @return agentId The token ID of the new agent.
     function register(string calldata agentURI, MetadataEntry[] calldata metadata) external returns (uint256 agentId);
 
     // ──────────────────────────────────────────────
@@ -105,8 +96,8 @@ interface IStarkLicense {
     //  Views
     // ──────────────────────────────────────────────
 
-    /// @notice Get the agent ID owned by an address (0 if none).
-    function agentOf(address owner) external view returns (uint256);
+    /// @notice Get all agent IDs owned by an address.
+    function agentsOf(address owner) external view returns (uint256[] memory);
 
     /// @notice Get the agent URI for a given agent ID.
     function agentURI(uint256 agentId) external view returns (string memory);
